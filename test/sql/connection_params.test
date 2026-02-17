@@ -1,0 +1,58 @@
+# name: test/sql/connection_params.test
+# description: test connection parameter handling
+# group: [chsql_native]
+
+# Load extension
+require chsql_native
+
+# Test that the extension loads correctly
+statement ok
+SELECT 1;
+
+# Note: The following tests would require a live ClickHouse server
+# They are commented out but demonstrate the expected usage
+
+# Test with full URL parameter
+# query I
+# SELECT * FROM clickhouse_scan(
+#     "SELECT 1 as test",
+#     url := 'tcp://localhost:9000'
+# );
+# ----
+# 1
+
+# Test with individual parameters
+# query I
+# SELECT * FROM clickhouse_scan(
+#     "SELECT 2 as test",
+#     host := 'localhost',
+#     port := '9000',
+#     user := 'default',
+#     password := ''
+# );
+# ----
+# 2
+
+# Test with secure connection
+# query I
+# SELECT * FROM clickhouse_scan(
+#     "SELECT 3 as test",
+#     host := 'remote.clickhouse.com',
+#     port := '9440',
+#     user := 'myuser',
+#     password := 'mypass',
+#     secure := 'true'
+# );
+# ----
+# 3
+
+# Test with database parameter
+# query I
+# SELECT * FROM clickhouse_scan(
+#     "SELECT 4 as test",
+#     host := 'localhost',
+#     port := '9000',
+#     database := 'mydb'
+# );
+# ----
+# 4

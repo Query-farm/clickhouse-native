@@ -22,6 +22,8 @@ export CLICKHOUSE_URL="tcp://localhost:9000"
 export CLICKHOUSE_URL="tcp://user:pass@remote:9440/?secure=true&skip_verify=true"
 ```
 ### ✏️ Usage
+
+#### Basic Query
 ```sql
 D SELECT * FROM clickhouse_scan("SELECT version(), 'hello', 123");
 ┌────────────┬─────────┬────────┐
@@ -31,6 +33,80 @@ D SELECT * FROM clickhouse_scan("SELECT version(), 'hello', 123");
 │ 24.10.2.80 │ hello   │    123 │
 └────────────┴─────────┴────────┘
 ```
+
+#### Using Named Parameters
+The extension supports flexible connection configuration through named parameters:
+
+```sql
+-- Using complete URL
+D SELECT * FROM clickhouse_scan(
+    "SELECT 1",
+    url := 'tcp://user:password@host:9000'
+);
+
+-- Using individual parameters
+D SELECT * FROM clickhouse_scan(
+    "SELECT 1",
+    host := '127.0.0.1',
+    port := '9000',
+    user := 'default',
+    password := 'mypassword',
+    database := 'default',
+    secure := 'true'
+);
+```
+
+#### Supported Parameters
+- `url` - Complete ClickHouse connection URL (e.g., `tcp://host:port`)
+- `host` - ClickHouse server hostname or IP
+- `port` - ClickHouse native protocol port (default: 9000)
+- `user` - Username for authentication (default: "default")
+- `password` - Password for authentication
+- `database` - Database name to connect to
+- `secure` - Enable secure connection (TLS)
+
+Parameters can also be set via environment variables:
+- `CLICKHOUSE_URL`
+- `CLICKHOUSE_HOST`
+- `CLICKHOUSE_PORT`
+- `CLICKHOUSE_USER`
+- `CLICKHOUSE_PASSWORD`
+- `CLICKHOUSE_DATABASE`
+- `CLICKHOUSE_SECURE`
+
+#### Using DuckDB Secrets (Future Feature)
+
+**Note:** Full DuckDB secret manager integration is planned for future releases. The examples below show the intended usage pattern once implemented.
+
+For better security in production environments, DuckDB's secret manager will allow storing credentials securely:
+
+```sql
+-- FUTURE: Create a secret for ClickHouse connection (not yet implemented)
+-- D CREATE SECRET ch_production (
+--     TYPE ch_native,
+--     HOST 'clickhouse.example.com',
+--     PORT '9000',
+--     USER 'myuser',
+--     PASSWORD 'mypassword',
+--     DATABASE 'mydb'
+-- );
+
+-- FUTURE: Use the secret with clickhouse_scan (not yet implemented)
+-- D SELECT * FROM clickhouse_scan('SELECT 1', secret := 'ch_production');
+```
+
+**Current Alternatives:**
+For now, use one of these secure approaches:
+- Store credentials in environment variables (`CLICKHOUSE_HOST`, `CLICKHOUSE_USER`, etc.)
+- Pass parameters directly in queries (for development/testing only)
+- Use a secrets management system (HashiCorp Vault, AWS Secrets Manager, etc.) to populate environment variables
+
+**Best Practices:**
+- Use environment variables for credentials in production
+- Avoid hardcoding passwords in queries or code
+- Use secure connections (`secure := 'true'`) for remote ClickHouse servers
+- Rotate credentials regularly
+- Use read-only database users when possible
 
 ## 🤖 Native Reader
 The extension provides an experimental clickhouse native file reader: `clickhouse_native`
