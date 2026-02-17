@@ -74,30 +74,39 @@ Parameters can also be set via environment variables:
 - `CLICKHOUSE_DATABASE`
 - `CLICKHOUSE_SECURE`
 
-#### Using DuckDB Secrets (Recommended for Production)
+#### Using DuckDB Secrets (Future Feature)
 
-For better security, you can store credentials using DuckDB's secret manager:
+**Note:** Full DuckDB secret manager integration is planned for future releases. The examples below show the intended usage pattern once implemented.
+
+For better security in production environments, DuckDB's secret manager will allow storing credentials securely:
 
 ```sql
--- Create a persistent secret for ClickHouse connection
-D CREATE SECRET ch_production (
-    TYPE HTTP,
-    EXTRA_HTTP_HEADERS MAP {
-        'X-ClickHouse-User': 'myuser',
-        'X-ClickHouse-Key': 'mypassword'
-    }
-);
+-- FUTURE: Create a secret for ClickHouse connection (not yet implemented)
+-- D CREATE SECRET ch_production (
+--     TYPE ch_native,
+--     HOST 'clickhouse.example.com',
+--     PORT '9000',
+--     USER 'myuser',
+--     PASSWORD 'mypassword',
+--     DATABASE 'mydb'
+-- );
 
--- Or use named parameters stored in a secret
--- Note: Full DuckDB secret manager integration is planned for future releases
--- For now, you can use environment variables or named parameters
+-- FUTURE: Use the secret with clickhouse_scan (not yet implemented)
+-- D SELECT * FROM clickhouse_scan('SELECT 1', secret := 'ch_production');
 ```
 
+**Current Alternatives:**
+For now, use one of these secure approaches:
+- Store credentials in environment variables (`CLICKHOUSE_HOST`, `CLICKHOUSE_USER`, etc.)
+- Pass parameters directly in queries (for development/testing only)
+- Use a secrets management system (HashiCorp Vault, AWS Secrets Manager, etc.) to populate environment variables
+
 **Best Practices:**
-- Use environment variables or DuckDB secrets for credentials in production
-- Avoid hardcoding passwords in queries
+- Use environment variables for credentials in production
+- Avoid hardcoding passwords in queries or code
 - Use secure connections (`secure := 'true'`) for remote ClickHouse servers
-- Keep credentials in a secure secrets management system
+- Rotate credentials regularly
+- Use read-only database users when possible
 
 ## 🤖 Native Reader
 The extension provides an experimental clickhouse native file reader: `clickhouse_native`

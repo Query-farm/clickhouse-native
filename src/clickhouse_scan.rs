@@ -274,6 +274,8 @@ impl VTab for ClickHouseScanVTab {
 
             for col_idx in 0..(*init_data).column_types.len() {
                 let mut vector = output.flat_vector(col_idx);
+                // Note: The double reference is required to avoid dangerous_implicit_autorefs lint
+                // This creates an explicit reference to the Vec before indexing
                 let type_id = &(&(*init_data).column_types)[col_idx];
 
                 match type_id {
