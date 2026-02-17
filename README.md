@@ -22,6 +22,8 @@ export CLICKHOUSE_URL="tcp://localhost:9000"
 export CLICKHOUSE_URL="tcp://user:pass@remote:9440/?secure=true&skip_verify=true"
 ```
 ### ✏️ Usage
+
+#### Basic Query
 ```sql
 D SELECT * FROM clickhouse_scan("SELECT version(), 'hello', 123");
 ┌────────────┬─────────┬────────┐
@@ -31,6 +33,71 @@ D SELECT * FROM clickhouse_scan("SELECT version(), 'hello', 123");
 │ 24.10.2.80 │ hello   │    123 │
 └────────────┴─────────┴────────┘
 ```
+
+#### Using Named Parameters
+The extension supports flexible connection configuration through named parameters:
+
+```sql
+-- Using complete URL
+D SELECT * FROM clickhouse_scan(
+    "SELECT 1",
+    url := 'tcp://user:password@host:9000'
+);
+
+-- Using individual parameters
+D SELECT * FROM clickhouse_scan(
+    "SELECT 1",
+    host := '127.0.0.1',
+    port := '9000',
+    user := 'default',
+    password := 'mypassword',
+    database := 'default',
+    secure := 'true'
+);
+```
+
+#### Supported Parameters
+- `url` - Complete ClickHouse connection URL (e.g., `tcp://host:port`)
+- `host` - ClickHouse server hostname or IP
+- `port` - ClickHouse native protocol port (default: 9000)
+- `user` - Username for authentication (default: "default")
+- `password` - Password for authentication
+- `database` - Database name to connect to
+- `secure` - Enable secure connection (TLS)
+
+Parameters can also be set via environment variables:
+- `CLICKHOUSE_URL`
+- `CLICKHOUSE_HOST`
+- `CLICKHOUSE_PORT`
+- `CLICKHOUSE_USER`
+- `CLICKHOUSE_PASSWORD`
+- `CLICKHOUSE_DATABASE`
+- `CLICKHOUSE_SECURE`
+
+#### Using DuckDB Secrets (Recommended for Production)
+
+For better security, you can store credentials using DuckDB's secret manager:
+
+```sql
+-- Create a persistent secret for ClickHouse connection
+D CREATE SECRET ch_production (
+    TYPE HTTP,
+    EXTRA_HTTP_HEADERS MAP {
+        'X-ClickHouse-User': 'myuser',
+        'X-ClickHouse-Key': 'mypassword'
+    }
+);
+
+-- Or use named parameters stored in a secret
+-- Note: Full DuckDB secret manager integration is planned for future releases
+-- For now, you can use environment variables or named parameters
+```
+
+**Best Practices:**
+- Use environment variables or DuckDB secrets for credentials in production
+- Avoid hardcoding passwords in queries
+- Use secure connections (`secure := 'true'`) for remote ClickHouse servers
+- Keep credentials in a secure secrets management system
 
 ## 🤖 Native Reader
 The extension provides an experimental clickhouse native file reader: `clickhouse_native`

@@ -52,13 +52,81 @@ impl VTab for ClickHouseScanVTab {
 
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         let query = bind.get_parameter(0).to_string();
-        let url = bind
+        
+        // Check if a URL is provided directly
+        let mut url = bind
             .get_named_parameter("url")
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| {
-                std::env::var("CLICKHOUSE_URL")
-                    .unwrap_or_else(|_| "tcp://localhost:9000".to_string())
-            });
+            .map(|v| v.to_string());
+        
+        // If no URL, try to build one from individual parameters
+        if url.is_none() {
+            let host = bind
+                .get_named_parameter("host")
+                .map(|v| v.to_string())
+                .or_else(|| std::env::var("CLICKHOUSE_HOST").ok());
+                
+            let port = bind
+                .get_named_parameter("port")
+                .map(|v| v.to_string())
+                .or_else(|| std::env::var("CLICKHOUSE_PORT").ok())
+                .unwrap_or_else(|| "9000".to_string());
+                
+            let user = bind
+                .get_named_parameter("user")
+                .map(|v| v.to_string())
+                .or_else(|| std::env::var("CLICKHOUSE_USER").ok())
+                .unwrap_or_else(|| "default".to_string());
+                
+            let password = bind
+                .get_named_parameter("password")
+                .map(|v| v.to_string())
+                .or_else(|| std::env::var("CLICKHOUSE_PASSWORD").ok())
+                .unwrap_or_default();
+                
+            let database = bind
+                .get_named_parameter("database")
+                .map(|v| v.to_string())
+                .or_else(|| std::env::var("CLICKHOUSE_DATABASE").ok());
+            
+            // Build URL from components if host is provided
+            if let Some(ref h) = host {
+                let auth = if !password.is_empty() {
+                    format!("{}:{}@", user, password)
+                } else if user != "default" {
+                    format!("{}@", user)
+                } else {
+                    String::new()
+                };
+                
+                let mut built_url = format!("tcp://{}{}:{}", auth, h, port);
+                
+                // Add database if provided
+                if let Some(ref db) = database {
+                    built_url = format!("{}/{}", built_url, db);
+                }
+                
+                // Add query parameters like secure=true if provided
+                let secure = bind
+                    .get_named_parameter("secure")
+                    .map(|v| v.to_string())
+                    .or_else(|| std::env::var("CLICKHOUSE_SECURE").ok());
+                    
+                if let Some(ref s) = secure {
+                    if s == "true" || s == "1" {
+                        built_url = format!("{}?secure=true", built_url);
+                    }
+                }
+                
+                url = Some(built_url);
+            }
+        }
+        
+        // Fall back to environment variable or default
+        let url = url.unwrap_or_else(|| {
+            std::env::var("CLICKHOUSE_URL")
+                .unwrap_or_else(|_| "tcp://localhost:9000".to_string())
+        });
+        
         let user = bind
             .get_named_parameter("user")
             .map(|v| v.to_string())
@@ -206,7 +274,7 @@ impl VTab for ClickHouseScanVTab {
 
             for col_idx in 0..(*init_data).column_types.len() {
                 let mut vector = output.flat_vector(col_idx);
-                let type_id = &(*init_data).column_types[col_idx];
+                let type_id = &(&(*init_data).column_types)[col_idx];
 
                 match type_id {
                     LogicalTypeId::Integer | LogicalTypeId::UInteger => {
