@@ -206,7 +206,7 @@ impl VTab for ClickHouseScanVTab {
 
             for col_idx in 0..(*init_data).column_types.len() {
                 let mut vector = output.flat_vector(col_idx);
-                let type_id = &(*init_data).column_types[col_idx];
+                let type_id = &(&(*init_data).column_types)[col_idx];
 
                 match type_id {
                     LogicalTypeId::Integer | LogicalTypeId::UInteger => {

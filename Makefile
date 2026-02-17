@@ -8,8 +8,10 @@ USE_UNSTABLE_C_API=1
 
 # TODO: these values are currently duplicated in lib.rs. There's a PR open in duckdb-rs that fixes this
 EXTENSION_NAME=chsql_native
-MINIMUM_DUCKDB_VERSION=v1.3.2
-TARGET_DUCKDB_VERSION=v1.3.2
+MINIMUM_DUCKDB_VERSION=v1.4.0
+TARGET_DUCKDB_VERSION=v1.4.0
+# Set test version to match target version (required when USE_UNSTABLE_C_API=1)
+DUCKDB_TEST_VERSION=1.4.0
 
 all: configure debug
 
