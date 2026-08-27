@@ -1,31 +1,30 @@
-use clickhouse_rs::{types::SqlType, Pool};
+use clickhouse_rs::{
+    types::{ColumnType, SqlType},
+    Pool,
+};
 use duckdb::{
     core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
     vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab},
     Connection, Result,
 };
-use std::{error::Error, sync::Arc};
+use std::{
+    error::Error,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use tokio::runtime::Runtime;
 
-#[repr(C)]
 struct ClickHouseScanBindData {
     url: String,
-    user: String,
-    password: String,
     query: String,
-    column_names: Vec<String>,
     column_types: Vec<LogicalTypeId>,
 }
 
-#[repr(C)]
 struct ClickHouseScanInitData {
-    runtime: Option<Arc<Runtime>>,
-    block_data: Option<Vec<Vec<String>>>,
+    block_data: Vec<Vec<String>>,
     column_types: Vec<LogicalTypeId>,
-    column_names: Vec<String>,
-    current_row: usize,
+    current_row: AtomicUsize,
     total_rows: usize,
-    done: bool,
+    done: AtomicBool,
 }
 
 fn map_clickhouse_type(sql_type: SqlType) -> LogicalTypeId {
@@ -44,6 +43,69 @@ fn map_clickhouse_type(sql_type: SqlType) -> LogicalTypeId {
     }
 }
 
+fn cell_to_string<'a, K: ColumnType>(
+    sql_type: SqlType,
+    row: &'a clickhouse_rs::types::Row<'a, K>,
+    name: &str,
+) -> String {
+    match sql_type {
+        SqlType::UInt8 => row.get::<u8, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0".into()),
+        SqlType::UInt16 => row.get::<u16, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0".into()),
+        SqlType::UInt32 => row.get::<u32, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0".into()),
+        SqlType::UInt64 => row.get::<u64, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0".into()),
+        SqlType::Int8 => row.get::<i8, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0".into()),
+        SqlType::Int16 => row.get::<i16, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0".into()),
+        SqlType::Int32 => row.get::<i32, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0".into()),
+        SqlType::Int64 => row.get::<i64, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0".into()),
+        SqlType::Float32 => row.get::<f32, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0.0".into()),
+        SqlType::Float64 => row.get::<f64, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "0.0".into()),
+        SqlType::String | SqlType::FixedString(_) => row.get::<String, _>(name).unwrap_or_default(),
+        SqlType::Bool => row.get::<bool, _>(name).map(|v| v.to_string()).unwrap_or_else(|_| "false".into()),
+        SqlType::Date => row.get::<String, _>(name).unwrap_or_else(|_| "1970-01-01".into()),
+        SqlType::DateTime(_) => row.get::<String, _>(name).unwrap_or_else(|_| "1970-01-01 00:00:00".into()),
+        _ => row.get::<String, _>(name).unwrap_or_else(|_| "0".into()),
+    }
+}
+
+fn fetch_schema(url: &str, query: &str) -> Result<(Vec<String>, Vec<LogicalTypeId>), Box<dyn Error>> {
+    let runtime = Runtime::new().map_err(|e| format!("Failed to create runtime: {e}"))?;
+    runtime.block_on(async {
+        let pool = Pool::new(url.to_string());
+        let mut client = pool.get_handle().await?;
+        let block = client.query(query).fetch_all().await?;
+
+        let mut names = Vec::new();
+        let mut types = Vec::new();
+        for col in block.columns() {
+            names.push(col.name().to_string());
+            types.push(map_clickhouse_type(col.sql_type()));
+        }
+        Ok::<_, Box<dyn Error>>((names, types))
+    })
+}
+
+fn fetch_block(url: &str, query: &str) -> Result<(Vec<Vec<String>>, usize), Box<dyn Error>> {
+    let runtime = Runtime::new().map_err(|e| format!("Failed to create runtime: {e}"))?;
+    runtime.block_on(async {
+        let pool = Pool::new(url.to_string());
+        let mut client = pool.get_handle().await?;
+        let block = client.query(query).fetch_all().await?;
+
+        let columns = block.columns();
+        let mut data: Vec<Vec<String>> = vec![Vec::new(); columns.len()];
+        let mut row_count = 0;
+
+        for row in block.rows() {
+            for (col_idx, col) in columns.iter().enumerate() {
+                data[col_idx].push(cell_to_string(col.sql_type(), &row, col.name()));
+            }
+            row_count += 1;
+        }
+
+        Ok::<_, Box<dyn Error>>((data, row_count))
+    })
+}
+
 struct ClickHouseScanVTab;
 
 impl VTab for ClickHouseScanVTab {
@@ -56,206 +118,100 @@ impl VTab for ClickHouseScanVTab {
             .get_named_parameter("url")
             .map(|v| v.to_string())
             .unwrap_or_else(|| {
-                std::env::var("CLICKHOUSE_URL")
-                    .unwrap_or_else(|_| "tcp://localhost:9000".to_string())
+                std::env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "tcp://localhost:9000".to_string())
             });
-        let user = bind
+        let _user = bind
             .get_named_parameter("user")
             .map(|v| v.to_string())
             .unwrap_or_else(|| {
                 std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".to_string())
             });
-        let password = bind
+        let _password = bind
             .get_named_parameter("password")
             .map(|v| v.to_string())
             .unwrap_or_else(|| std::env::var("CLICKHOUSE_PASSWORD").unwrap_or_default());
 
-        let runtime = Arc::new(Runtime::new().map_err(|e| format!("Failed to create runtime: {}", e))?);
-
-        let result = runtime.block_on(async {
-            let pool = Pool::new(url.clone());
-            let mut client = pool.get_handle().await?;
-            let block = client.query(&query).fetch_all().await?;
-
-            let columns = block.columns();
-            let mut names = Vec::new();
-            let mut types = Vec::new();
-
-            for col in columns {
-                names.push(col.name().to_string());
-                types.push(map_clickhouse_type(col.sql_type()));
-            }
-
-            Ok::<(Vec<String>, Vec<LogicalTypeId>), Box<dyn Error>>((names, types))
-        })?;
-
-        let (names, types) = result;
+        let (names, types) = fetch_schema(&url, &query)?;
 
         for (name, type_id) in names.iter().zip(types.iter()) {
-            let logical_type = match type_id {
-                LogicalTypeId::Integer => LogicalTypeId::Integer,
-                LogicalTypeId::Bigint => LogicalTypeId::Bigint,
-                LogicalTypeId::UInteger => LogicalTypeId::UInteger,
-                LogicalTypeId::UBigint => LogicalTypeId::UBigint,
-                LogicalTypeId::Float => LogicalTypeId::Float,
-                LogicalTypeId::Double => LogicalTypeId::Double,
-                LogicalTypeId::Varchar => LogicalTypeId::Varchar,
-                LogicalTypeId::Date => LogicalTypeId::Date,
-                LogicalTypeId::Timestamp => LogicalTypeId::Timestamp,
-                LogicalTypeId::Boolean => LogicalTypeId::Boolean,
-                _ => LogicalTypeId::Varchar,
-            };
-            let type_handle = LogicalTypeHandle::from(logical_type);
-            bind.add_result_column(name, type_handle);
+            bind.add_result_column(name, LogicalTypeHandle::from(*type_id));
         }
 
         Ok(ClickHouseScanBindData {
             url,
-            user,
-            password,
             query,
-            column_names: names,
             column_types: types,
         })
     }
 
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
-        let bind_data = info.get_bind_data::<ClickHouseScanBindData>();
-        let bind_data = unsafe { &*bind_data };
+        let bind_data = unsafe { info.get_bind_data::<ClickHouseScanBindData>().as_ref() }
+            .ok_or("ClickHouse bind data is missing")?;
 
-        let runtime = Arc::new(Runtime::new().map_err(|e| format!("Failed to create runtime: {}", e))?);
-
-        let result = runtime.block_on(async {
-            let pool = Pool::new(bind_data.url.clone());
-            let mut client = pool.get_handle().await?;
-            let block = client.query(&bind_data.query).fetch_all().await?;
-
-            let columns = block.columns();
-            let mut data: Vec<Vec<String>> = Vec::new();
-
-            for _ in columns {
-                data.push(Vec::new());
-            }
-
-            let mut row_count = 0;
-            for row in block.rows() {
-                for (col_idx, col) in columns.iter().enumerate() {
-                    let value = match col.sql_type() {
-                        SqlType::UInt8 => match row.get::<u8, &str>(col.name()) {
-                            Ok(val) => val.to_string(),
-                            Err(_) => "0".to_string(),
-                        },
-                        // ... rest of type handling ...
-                        _ => match row.get::<String, &str>(col.name()) {
-                            Ok(val) => val,
-                            Err(_) => "0".to_string(),
-                        },
-                    };
-                    data[col_idx].push(value);
-                }
-                row_count += 1;
-            }
-
-            Ok::<(Vec<Vec<String>>, usize), Box<dyn Error>>((data, row_count))
-        })?;
-
-        let (block_data, total_rows) = result;
-
-        let column_types = bind_data.column_types.iter().map(|t| match t {
-            LogicalTypeId::Integer => LogicalTypeId::Integer,
-            LogicalTypeId::Bigint => LogicalTypeId::Bigint,
-            LogicalTypeId::UInteger => LogicalTypeId::UInteger,
-            LogicalTypeId::UBigint => LogicalTypeId::UBigint,
-            LogicalTypeId::Float => LogicalTypeId::Float,
-            LogicalTypeId::Double => LogicalTypeId::Double,
-            LogicalTypeId::Varchar => LogicalTypeId::Varchar,
-            LogicalTypeId::Date => LogicalTypeId::Date,
-            LogicalTypeId::Timestamp => LogicalTypeId::Timestamp,
-            LogicalTypeId::Boolean => LogicalTypeId::Boolean,
-            _ => LogicalTypeId::Varchar,
-        }).collect();
-        let column_names = bind_data.column_names.iter().cloned().collect();
+        let (block_data, total_rows) = fetch_block(&bind_data.url, &bind_data.query)?;
 
         Ok(ClickHouseScanInitData {
-            runtime: Some(runtime),
-            block_data: Some(block_data),
-            column_types,
-            column_names,
-            current_row: 0,
+            block_data,
+            column_types: bind_data.column_types.clone(),
+            current_row: AtomicUsize::new(0),
             total_rows,
-            done: false,
+            done: AtomicBool::new(false),
         })
     }
 
     fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
-        let init_data = func.get_init_data() as *const ClickHouseScanInitData as *mut ClickHouseScanInitData;
-        
-        unsafe {
-            if (*init_data).done || (*init_data).current_row >= (*init_data).total_rows {
-                output.set_len(0);
-                (*init_data).done = true;
-                return Ok(());
-            }
+        let init_data = func.get_init_data();
+        let current_row = init_data.current_row.load(Ordering::Relaxed);
 
-            let block_data = match (*init_data).block_data.as_ref() {
-                Some(data) => data,
-                None => return Err("Block data is not available".into()),
-            };
+        if current_row >= init_data.total_rows || init_data.done.load(Ordering::Relaxed) {
+            output.set_len(0);
+            init_data.done.store(true, Ordering::Relaxed);
+            return Ok(());
+        }
 
-            let batch_size = 1024.min((*init_data).total_rows - (*init_data).current_row);
+        let batch_size = 1024.min(init_data.total_rows - current_row);
 
-            for col_idx in 0..(*init_data).column_types.len() {
-                let mut vector = output.flat_vector(col_idx);
-                let type_id = &(&(*init_data).column_types)[col_idx];
+        for (col_idx, type_id) in init_data.column_types.iter().enumerate() {
+            let mut vector = output.flat_vector(col_idx);
 
-                match type_id {
-                    LogicalTypeId::Integer | LogicalTypeId::UInteger => {
-                        let slice = vector.as_mut_slice::<i32>();
-                        for row_offset in 0..batch_size {
-                            let row_idx = (*init_data).current_row + row_offset;
-                            let val_str = &block_data[col_idx][row_idx];
-
-                            let val = if let Ok(v) = val_str.parse::<i32>() {
-                                v
-                            } else if let Ok(v) = val_str.parse::<u32>() {
-                                v as i32
-                            } else if let Ok(v) = i32::from_str_radix(val_str.trim(), 10) {
-                                v
-                            } else {
-                                0
-                            };
-                            slice[row_offset] = val;
-                        }
+            match type_id {
+                LogicalTypeId::Integer | LogicalTypeId::UInteger => {
+                    let slice = unsafe { vector.as_mut_slice::<i32>() };
+                    for row_offset in 0..batch_size {
+                        let val_str = &init_data.block_data[col_idx][current_row + row_offset];
+                        slice[row_offset] = val_str.parse::<i32>().or_else(|_| val_str.parse::<u32>().map(|v| v as i32)).unwrap_or(0);
                     }
-                    LogicalTypeId::Bigint => {
-                        let slice = vector.as_mut_slice::<i64>();
-                        for row_offset in 0..batch_size {
-                            let row_idx = (*init_data).current_row + row_offset;
-                            if let Ok(val) = block_data[col_idx][row_idx].parse::<i64>() {
-                                slice[row_offset] = val;
-                            } else {
-                                slice[row_offset] = 0;
-                            }
-                        }
+                }
+                LogicalTypeId::Bigint | LogicalTypeId::UBigint => {
+                    let slice = unsafe { vector.as_mut_slice::<i64>() };
+                    for row_offset in 0..batch_size {
+                        let val_str = &init_data.block_data[col_idx][current_row + row_offset];
+                        slice[row_offset] = val_str.parse::<i64>().or_else(|_| val_str.parse::<u64>().map(|v| v as i64)).unwrap_or(0);
                     }
-                    _ => {
-                        for row_offset in 0..batch_size {
-                            let row_idx = (*init_data).current_row + row_offset;
-                            let val = block_data[col_idx][row_idx].as_str();
-                            vector.insert(row_offset, val);
-                        }
+                }
+                _ => {
+                    for row_offset in 0..batch_size {
+                        vector.insert(row_offset, init_data.block_data[col_idx][current_row + row_offset].as_str());
                     }
                 }
             }
-
-            (*init_data).current_row += batch_size;
-            output.set_len(batch_size);
         }
+
+        init_data.current_row.fetch_add(batch_size, Ordering::Relaxed);
+        output.set_len(batch_size);
         Ok(())
     }
 
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
         Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+    }
+
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        Some(vec![
+            ("url".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+            ("user".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+            ("password".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+        ])
     }
 }
 

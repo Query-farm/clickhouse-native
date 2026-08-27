@@ -6,12 +6,10 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 # Note: currently extension-template-rs requires this, as duckdb-rs relies on unstable C API functionality
 USE_UNSTABLE_C_API=1
 
-# TODO: these values are currently duplicated in lib.rs. There's a PR open in duckdb-rs that fixes this
 EXTENSION_NAME=chsql_native
-MINIMUM_DUCKDB_VERSION=v1.4.0
-TARGET_DUCKDB_VERSION=v1.4.0
+TARGET_DUCKDB_VERSION=v1.5.5
 # Set test version to match target version (required when USE_UNSTABLE_C_API=1)
-DUCKDB_TEST_VERSION=1.4.0
+DUCKDB_TEST_VERSION=1.5.5
 
 all: configure debug
 

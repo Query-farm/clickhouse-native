@@ -1,10 +1,10 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use duckdb::{
     core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
+    duckdb_entrypoint_c_api,
     vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab},
     Connection, Result,
 };
-use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use std::{
     error::Error,
     fs::File,
@@ -265,9 +265,9 @@ impl VTab for ClickHouseVTab {
     }
 
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
-        let bind_data = info.get_bind_data::<ClickHouseBindData>();
-        let filepath = unsafe { &(*bind_data).filepath };
-        let file = File::open(filepath)?;
+        let bind_data = unsafe { info.get_bind_data::<ClickHouseBindData>().as_ref() }
+            .ok_or("ClickHouse bind data is missing")?;
+        let file = File::open(&bind_data.filepath)?;
         let mut reader = BufReader::with_capacity(64 * 1024, file);
 
         let columns = read_native_format(&mut reader)?;
@@ -315,7 +315,7 @@ impl VTab for ClickHouseVTab {
                     }
                 }
                 ColumnType::UInt8 => {
-                    let slice = vector.as_mut_slice::<i32>();
+                    let slice = unsafe { vector.as_mut_slice::<i32>() };
                     for row in 0..batch_size {
                         let data_idx = current_row + row;
                         if let ColumnData::UInt8(v) = column.data[data_idx] {
@@ -333,7 +333,7 @@ impl VTab for ClickHouseVTab {
                 }
 
                 ColumnType::UInt64 => {
-                    let slice = vector.as_mut_slice::<i32>();
+                    let slice = unsafe { vector.as_mut_slice::<i32>() };
                     for row in 0..batch_size {
                         let data_idx = current_row + row;
                         if let ColumnData::UInt64(v) = column.data[data_idx] {
@@ -342,7 +342,7 @@ impl VTab for ClickHouseVTab {
                     }
                 }
                 ColumnType::Int => {
-                    let slice = vector.as_mut_slice::<i32>();
+                    let slice = unsafe { vector.as_mut_slice::<i32>() };
                     for row in 0..batch_size {
                         let data_idx = current_row + row;
                         if let ColumnData::Int(v) = column.data[data_idx] {
@@ -364,7 +364,7 @@ impl VTab for ClickHouseVTab {
     }
 }
 
-#[duckdb_entrypoint_c_api()]
+#[duckdb_entrypoint_c_api]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
     con.register_table_function::<ClickHouseVTab>("clickhouse_native")?;
     clickhouse_scan::register_clickhouse_scan(&con)?;
